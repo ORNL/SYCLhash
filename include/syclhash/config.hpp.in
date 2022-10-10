@@ -1,0 +1,13 @@
+#ifndef _SHASH_CONFIG_H
+#define _SHASH_CONFIG_H
+
+#include <CL/sycl.hpp>
+
+#define SHASH_VERSION_MAJOR @SHASH_VERSION_MAJOR@
+#define SHASH_VERSION_MINOR @SHASH_VERSION_MINOR@
+
+namespace syclhash {
+namespace sycl = cl::sycl;
+}
+
+#endif
