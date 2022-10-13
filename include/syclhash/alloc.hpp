@@ -23,6 +23,9 @@ int ctz(Ptr x) {
  *  chunks of identically sized memory.
  */
 class Alloc {
+    template <sycl::access::mode Mode>
+    friend class DeviceAlloc;
+
     sycl::buffer<uint32_t, 1> free_list; // bitmask for free cells
     const int size_expt;
 
@@ -51,9 +54,6 @@ class Alloc {
             });
         }
     }
-
-    template <sycl::access::mode Mode>
-    friend class DeviceAlloc;
 };
 
 /** Device-side functionality for Alloc.
@@ -79,13 +79,12 @@ class DeviceAlloc {
      */
     template <typename Group>
     bool try_alloc(Group g, Ptr index) const {
-        const Ptr j = index%32;
         bool ok = false;
 
-        if(g.get_local_linear_id() == j) {
+        if(g.get_local_linear_id() == 0) {
             ok = try_alloc(index);
         }
-        return sycl::select_from_group(g, ok, j);
+        return sycl::select_from_group(g, ok, 0);
     }
 
     //< Returns true on successful allocation.
@@ -142,7 +141,7 @@ class DeviceAlloc {
         Ptr occ = free_list[my_i];
         // rotate right so we start searching from offset
         Ptr sorted = rotl32(~occ, 32-offset);
-        int j = ctz(~occ); // number of trailing 1-s
+        int j = ctz(sorted); // number of trailing 1-s
         if(j < 32) { // j is the first unoccupied slot in free_list[my_i],
                      // counting circularly from offset
             idx = my_i*32 + (j+offset)%32;
@@ -195,7 +194,7 @@ class DeviceAlloc {
         const Ptr gid = g.get_group_linear_id();
         Ptr index = mod(key);
         Ptr loc = null_ptr;
-        for(int i=0; i< (1 << size_expt); i++) {
+        for(int i=0; i < (1 << size_expt); i++) {
             loc = search_index(g, index);
             if(loc != null_ptr) {
                 break;

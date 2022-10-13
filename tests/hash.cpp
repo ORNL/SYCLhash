@@ -5,15 +5,16 @@
 using namespace syclhash;
 
 template <typename T>
-void show(const sycl::stream &out, int id, T &x) {
+void show(sycl::group<1> g, const sycl::stream &out, int id, T &x) {
     std::stringstream ss;
     ss << id << ":";
-    for(auto item : x) {
-        ss << " " << item;
+    for(auto item = x.begin(g); item != x.end(g); ++item) {
+        ss << " " << *item;
     }
     ss << "\n";
     std::string ans(ss.str());
-    out << ans.c_str();
+    if(g.get_local_linear_id() == 0)
+        out << ans.c_str();
 }
 
 int main() {
@@ -39,23 +40,22 @@ int main() {
                 bucket.insert(g, 1+10*gid);
                 bucket.insert(g, 2+10*gid);
                 bucket.insert(g, 3+10*gid);
-                if(it.get_local_id(0) == 0) {
-                    show(out, gid, bucket);
-                }
+                show(g, out, gid, bucket);
             }
 
             // get the next index over
             if(1) {
                 auto bucket = dh[ (gid+1)%4 ];
-                //bucket.erase(++bucket.begin());
-                if(it.get_local_id(0) == 0) {
-                    show(out, gid, bucket);
-                }
+                //(++bucket.begin(g)).erase();
+                bucket.begin(g).erase();
+                show(g, out, gid, bucket);
+            }
 
-                //bucket.erase(bucket.begin());
-                //if(it.get_local_id(0) == 0) {
-                //    show(out, gid, bucket);
-                //}
+            if(1) {
+                auto bucket = dh[ gid ];
+                bucket.insert(g, 4+10*gid);
+                bucket.insert(g, 5+10*gid);
+                show(g, out, gid, bucket);
             }
         });
     });

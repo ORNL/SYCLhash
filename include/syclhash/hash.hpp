@@ -5,13 +5,37 @@
 #include <syclhash/base.hpp>
 #include <syclhash/alloc.hpp>
 
+//> have only the leader call fn(args), all other id-s return same result
+#define apply_leader(ans, g, call) { \
+    if(g.get_local_linear_id() == 0) { \
+        ans = call; \
+    } \
+    ans = sycl::select_from_group(g, ans, 0); \
+}
+
 namespace syclhash {
+
+// have only the leader call fn(args), all other id-s return same result
+// This approach confuses the compiler with:
+// error: reference to non-static member function must be called
+/*
+template <typename Ret, typename Group, typename F, typename... Args>
+Ret apply_leader(Group g, F fn, Args... args) {
+    Ret ans;
+    if(g.get_local_linear_id() == 0) {
+        ans = fn(args...);
+    }
+    return sycl::select_from_group(g, ans, 0);
+}*/
 
 template <typename T, sycl::access::mode Mode>
 class DeviceHash;
 
 template <typename T>
 class Hash {
+    template <typename U, sycl::access::mode Mode>
+    friend class DeviceHash;
+
     Alloc                     alloc;
     sycl::buffer<T,1>         cell;
     sycl::buffer<Ptr, 1>      keys; // key for each cell
@@ -40,9 +64,6 @@ class Hash {
             cgh.fill(N, null_ptr);
         });
     }
-
-    template <typename U, sycl::access::mode Mode>
-    friend class DeviceHash;
 };
 
 /** Iterate through a linked list of cells.
@@ -51,7 +72,7 @@ class Hash {
  *
  *     for(T &val : dh.get(key)) {
  *         printf("%lu %lu\n", key, val);
- *     } printf("\n"); }
+ *     } printf("\n");
  *
  */
 template<class T, sycl::access::mode Mode>
@@ -70,21 +91,31 @@ class Bucket {
         friend class Bucket<T,Mode>;
         DeviceHash<T,Mode> &dh;
         Ptr index;
+        sycl::group<1> grp;
     
         /** Only friends can construct iterators.
          */
-        iterator(DeviceHash<T,Mode> &dh, Ptr key, Ptr index)
-                : dh(dh), index(index), key(key) {
-            seek();
+        iterator(sycl::group<1> g, DeviceHash<T,Mode> &dh, Ptr key, Ptr index)
+                : dh(dh), index(index), key(key), grp(g) {
+            seek(g, false);
         }
 
         /** Seek forward to the next valid index --
          * where dh.keys[index] == key
          * or index == null_ptr
+         *
+         * if fwd == true, then seek will start by advancing
+         * to next[index]
          */
-        void seek() {
-            for(; index != null_ptr && dh.keys[index] != key
-                ; index = dh.next[index] );
+        template <typename Group>
+        void seek(Group g, bool fwd) {
+            bool ret;
+            apply_leader(ret, g, dh.seek(index, key, fwd));
+            if( ret ) { //apply_leader<Ptr>(g, dh.seek, index, key)
+                index = sycl::select_from_group(g, index, 0);
+            } else {
+                index = null_ptr;
+            }
         }
 
       public:
@@ -109,14 +140,19 @@ class Bucket {
         }
 
         reference operator *() const {
-            return dh.cell[index];
+            return dh.get_cell(index);
+        }
+        bool erase() {
+            bool ret;
+            //return apply_leader<bool>(grp, dh.erase_key, index, key);
+            apply_leader(ret, grp, dh.erase_key(index, key));
+            return ret;
         }
 
         // pre-increment
         iterator &operator++() {
             if(index != null_ptr) {
-                index = dh.next[index];
-                seek();
+                seek(grp, true);
             }
             return *this;
         }
@@ -134,29 +170,35 @@ class Bucket {
         };
     };
 
-    iterator begin() {
+    iterator begin(sycl::group<1> grp) {
         /* This special case is correct, but not needed.
          * Because unoccupied cells must have next set to null_ptr,
          * seek() will find next[key] == null_ptr.
         if(!dh.alloc.occupied(key)) {
-            return end();
+            return end(grp);
         }*/
-        return iterator(dh, key, dh.mod(key));
+        return iterator(grp, dh, key, dh.mod(key));
     }
-    iterator end()   { return iterator(dh, key, null_ptr); }
+    iterator end(sycl::group<1> grp) {
+        return iterator(grp, dh, key, null_ptr);
+    }
 
     /** Put a new value into this bucket.
      *
-     *  Return the Cursor where value was successfully placed.
-     *  Note - cursor will be == end(), a null_ptr, on error.
+     *  Return the iterator where value was successfully placed.
+     *  Note - on error, iterator will be == end(grp), a null_ptr.
      */
-    template <typename Group>
-    iterator insert(Group g, const T& value) {
+    iterator insert(sycl::group<1> grp, const T& value) {
         Ptr index = dh.mod(key);
         // special case -- first insertion
-        if(dh.keys[index] == null_ptr && dh.alloc.try_alloc(g, index)) {
-            while(!dh.set_key(g, index, key, value)) {}
-            return begin();
+        //if(dh.keys[index] == null_ptr && dh.alloc.try_alloc(grp, index)) {
+        if(dh.alloc.try_alloc(grp, index)) {
+            bool ret;
+            do {
+                apply_leader(ret, grp, dh.set_key(index, key, value));
+            } while(!ret);
+            //while(!apply_leader<bool>(grp, dh.set_key, index, key, value)) {}
+            return begin(grp);
         }
         // below: canonical index is already allocated somewhere.
 
@@ -164,29 +206,30 @@ class Bucket {
             index = dh.mod(key);
 
             // seek to end of linked-list
-            for(; dh.keys[index] != null_ptr && dh.next[index] != null_ptr
-                ; index = dh.next[index]) { }
+            bool empty; //= apply_leader<bool>(grp, dh.seek, index, null_ptr);
+            apply_leader(empty, grp, dh.seek(index, null_ptr, false));
 
-            if(dh.keys[index] == null_ptr) {
-                // empty slot: re-use it
-                if(dh.set_key(g, index, key, value)) {
-                    return iterator(dh, key, index);
+            if(empty) {
+                // leader's index is an empty slot: re-use it
+                index = sycl::select_from_group(grp, index, 0);
+                bool ok;
+                apply_leader(ok, grp, dh.set_key(index, key, value));
+                //if( apply_leader<bool>(grp, dh.set_key, index, key, value) ) {
+                if(ok) {
+                    return iterator(grp, dh, key, index);
                 }
-            } else if(dh.next[index] == null_ptr) {
+            } else {
                 // reached end: allocate a new slot
-                Ptr loc = dh.alloc.alloc(g, key);
+                Ptr loc = dh.alloc.alloc(grp, key);
                 if(loc == null_ptr) { // memory is full
-                    return end();
+                    return end(grp);
                 }
-                dh.keys[loc] = key;
-                dh.cell[loc] = value;
-                // now that we have it, we must put loc at the end
-                while( !dh.set_next(g, index, loc)) {
-                    index = dh.mod(key);
-                    for(; dh.next[index] != null_ptr
-                        ; index = dh.next[index]) { }
+                if(grp.get_local_linear_id() == 0) {
+                    dh.set_key_unsafe(loc, key, value);
+                    // now that we have it, we must put loc at the end
+                    dh.set_last(key, loc);
                 }
-                return iterator(dh, key, loc);
+                return iterator(grp, dh, key, loc);
             }
         };
     }
@@ -201,24 +244,7 @@ class Bucket {
      * These are skipped over during bucket iteration.
      */
     bool erase(iterator position) {
-        if(position.index == null_ptr) return false;
-        auto v = sycl::atomic_ref<
-                            Ptr, sycl::memory_order::release,
-                            sycl::memory_scope::device,
-                            sycl::access::address_space::global_space>(
-                                    dh.keys[position.index]);
-        Ptr val = key;
-        return v.compare_exchange_strong(val, null_ptr);
-    }
-
-    //> Have the group leader call erase() and report back to the group.
-    template <typename Group>
-    bool erase(Group g, iterator position) {
-        bool result = false;
-        if(g.get_local_linear_id() == 0) {
-            result = del(position);
-        }
-        return sycl::select_from_group(g, result, 0);
+        return position.erase();
     }
 };
 
@@ -230,20 +256,20 @@ class Bucket {
  */
 template <typename T, sycl::access::mode Mode>
 class DeviceHash {
-    friend class Bucket<T,Mode>;
+    //friend class Bucket<T,Mode>;
 
-    DeviceAlloc<Mode>                alloc;
     sycl::accessor<T, 1, Mode>        cell;
     sycl::accessor<Ptr, 1, Mode>      keys;  // key for each cell
     sycl::accessor<Ptr, 1, Mode>      next; // `next` pointer for each cell
   public:
+    DeviceAlloc<Mode>                alloc;
     const int size_expt;
 
     DeviceHash(Hash<T> &h, sycl::handler &cgh)
-        : alloc(h.alloc, cgh)
-        , cell(h.cell, cgh)
+        : cell(h.cell, cgh)
         , keys(h.keys, cgh)
         , next(h.next, cgh)
+        , alloc(h.alloc, cgh)
         , size_expt(h.size_expt)
         //, count(h.cell.get_count()) // max capacity
         { }
@@ -266,6 +292,17 @@ class DeviceHash {
     insert(Group g, Ptr key, const T&value) {
         Bucket<T,Mode> bucket = (*this)[key];
         return bucket.insert(g, value);
+    }
+
+    //> Set the key (assumes no potential contention on key)
+    void set_key_unsafe(Ptr loc, Ptr key, const T &value) {
+        keys[loc] = key;
+        cell[loc] = value;
+    }
+
+    //> Used to read a cell value.
+    T &get_cell(Ptr loc) {
+        return cell[loc];
     }
 
     /** Where key was null_ptr, set to key
@@ -291,36 +328,64 @@ class DeviceHash {
         return true;
     }
 
-    //> Have the group leader call set_key and report the result.
-    template <typename Group>
-    bool set_key(Group g, Ptr index, Ptr key, const T &value) {
-        bool result = false;
-        if(g.get_local_linear_id() == 0) {
-            result = set_key(index, key, value);
-        }
-        return sycl::select_from_group(g, result, 0);
-    }
-
-    //> Link index -> loc by setting next[index]
-    bool set_next(Ptr index, Ptr loc) {
+    //> Erase the key at index (by overwriting key with null_ptr)
+    bool erase_key(Ptr index, Ptr key) {
+        if(index == null_ptr) return false;
         auto v = sycl::atomic_ref<
-                            Ptr, sycl::memory_order::relaxed,
+                            Ptr, sycl::memory_order::release,
                             sycl::memory_scope::device,
                             sycl::access::address_space::global_space>(
-                                    next[index]);
-        Ptr val = null_ptr;
-        return(v.compare_exchange_weak(val, loc,
-                            sycl::memory_order::release));
+                                    keys[index]);
+        Ptr val = key;
+        return v.compare_exchange_strong(val, null_ptr);
     }
 
-    //> Have the group leader call set_next and report the result.
-    template <typename Group>
-    bool set_next(Group g, Ptr index, Ptr loc) {
-        bool result = false;
-        if(g.get_local_linear_id() == 0) {
-            result = set_next(index, loc);
+
+    //> Link key -> loc by setting last next-ptr from key
+    void set_last(Ptr key, Ptr loc) {
+        Ptr val = null_ptr;
+        while(1) {
+            Ptr index = seek_end(mod(key));
+            auto v = sycl::atomic_ref<
+                                Ptr, sycl::memory_order::relaxed,
+                                sycl::memory_scope::device,
+                                sycl::access::address_space::global_space>(
+                                        next[index]);
+            if(v.compare_exchange_weak(val, loc, sycl::memory_order::release))
+                break;
         }
-        return sycl::select_from_group(g, result, 0);
+    }
+
+    /** Seek to the next slot with key == search
+     *
+     * updates index as it moves forwards
+     * returns true if keys[index] == search
+     * false if keys[index] != search OR if index == null_ptr
+     * (in which case next[index] == null_ptr)
+     */
+    bool seek(Ptr &index, Ptr search, bool fwd) {
+        if(fwd) {
+            index = next[index];
+        }
+        if(index == null_ptr) return false;
+        while(keys[index] != search) {
+            Ptr mv = next[index];
+            if(mv == null_ptr) return false;
+            index = mv;
+        };
+        return true;
+    }
+
+    /** Seek to the end of the list.
+     */
+    Ptr seek_end(Ptr index) {
+        // seek to end of linked-list
+        while(1) {
+            Ptr mv = next[index];
+            if(mv == null_ptr) return index;
+            index = mv;
+        }
+        return null_ptr;
     }
 };
 
