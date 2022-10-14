@@ -7,14 +7,16 @@ SYCL hash
 
    installing
 
-   hash
    allocator
+   hash
 
-SYCL hash is a performant hash table written in the
-SYCL programming model.
+SYCL hash is a lock-free concurrent hash
+table written in the SYCL programming model.
 
-Insert/delete options run in parallel using a linked-cell
-list datastructure.
+Buckets are implemented using a linked-cell
+list data structure. Cells are allocated
+using an allocator that maintains a free-list
+as a bit vector (1 = occupied).
 
 ---
 

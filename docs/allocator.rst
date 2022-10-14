@@ -1,15 +1,16 @@
 Memory Allocator
 ################
 
-The memory allocator is based on the concepts from `SlabHash`.
+The memory allocator is based on the concepts from
+`SlabHash <https://github.com/owensgroup/SlabHash>`_.
 An entire group works synchronously, so every operation
 is called by every index in the group, but only one logical
 allocation/de-allocation takes place during a call.
 
-The allocator is designed to allocate/de-allocate
-one `Cell` data structure at a time.  This is because
-the expected number of overflows is usually 0, or 1,
-but could sometimes be more.
+The allocator is only designed to allocate/de-allocate
+one data address at a time.  This is because its intended
+use is for hash-tables, where adding a key to a bucket
+requires one new slot.
 
 It maintains 2 data structures:
 
@@ -53,4 +54,7 @@ The hash output space is 2^16.  This limits the maximum addressable space to
 N <= 2^16 cells.
 
 .. doxygenclass:: syclhash::Alloc
+   :members:
+
+.. doxygenclass:: syclhash::DeviceAlloc
    :members:

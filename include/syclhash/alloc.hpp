@@ -21,6 +21,8 @@ int ctz(Ptr x) {
 
 /** Allocator. Uses a free-list to manage
  *  chunks of identically sized memory.
+ *
+ *  (requires 2**(size_expt-3) bytes)
  */
 class Alloc {
     template <sycl::access::mode Mode>
@@ -30,6 +32,11 @@ class Alloc {
     const int size_expt;
 
   public:
+    /** Allocate and initialize space for max 2**size_expt items.
+     *
+     * @arg size_expt - exponent of the allocator's size
+     * @arg queue     - SYCL queue to use when initializing free_list
+     */
     Alloc(int size_expt, sycl::queue &queue)
         : free_list(1 << (size_expt < 5 ? 0 : size_expt-5))
         , size_expt(size_expt) {
@@ -57,6 +64,8 @@ class Alloc {
 };
 
 /** Device-side functionality for Alloc.
+ *
+ * @tparam Mode The accessor mode for reading/writing from/to the free-list.
  */
 template <sycl::access::mode Mode>
 class DeviceAlloc {
@@ -65,17 +74,22 @@ class DeviceAlloc {
   public:
     const int size_expt;
 
+    /** Construct from the host Alloc class.
+     *
+     * @arg h host alloc class
+     * @arg cgh SYCL handler
+     */
     DeviceAlloc(Alloc &h, sycl::handler &cgh)
         : free_list(h.free_list, cgh)
         , size_expt(h.size_expt)
         { }
 
-    /** One index in the group will attempt an atomic-or
-     * to claim the index.
+    /** Leading thread from Group g calls try_alloc.
      *
      * Every group member will return the same result:
      * - true on successful allocation
      * - false on failure
+     *
      */
     template <typename Group>
     bool try_alloc(Group g, Ptr index) const {
@@ -87,7 +101,14 @@ class DeviceAlloc {
         return sycl::select_from_group(g, ok, 0);
     }
 
-    //< Returns true on successful allocation.
+    /** Try allocating at the given index.
+     *
+     * This is implemented with an atomic-or using mask = 1<<(index%32)
+     * on free_list[index/32].
+     *
+     * @arg index 
+     * @return true on successful allocation, false otherwise
+     */
     bool try_alloc(Ptr index) const {
         const Ptr i = index/32;
         const Ptr j = index%32;
@@ -102,7 +123,7 @@ class DeviceAlloc {
         return (ans & mask) == 0;
     }
 
-    //< Returns true on successful free, false if already free.
+    /// Returns true on successful free, false if already free.
     bool free(Ptr index) const {
         const Ptr i = index/32;
         const Ptr j = index%32;
@@ -125,9 +146,11 @@ class DeviceAlloc {
      * looks at one block of 32 slots.  If one is full,
      * it attempts to allocate it.
      *
-     * Every member returns the same value:
-     * - true on successful allocation
-     * - fase on failure
+     * Every member of the group returns the same value.
+     *
+     * @arg g collective group doing the search
+     * @arg base starting index to search (will be returned if available)
+     * @return index of allocated result (or null_ptr on failure)
      */
     template <typename Group>
     Ptr search_index(Group g, Ptr base) const {
@@ -175,15 +198,18 @@ class DeviceAlloc {
     }
 
     /** Increment index in a pseudo-random way
-     * that causes different groups to diverge in their
-     * search sequence.
      *
-     * Always returns an index within the addressable range.
+     * Combining `seed` with `accum`,
+     * stores the result in `seed`, then
+     * returns an index (computed from the output seed)
+     * within the addressable range.
      *
-     * Implementation Note: must make progress even for gid == 0.
+     * Implementation note: Consumers of this function
+     * require seed to make progress even for accum == 0.
+     *
      */
-    Ptr next_hash(Ptr *seed, Ptr gid) const {
-        return mod(murmur3(seed, gid));
+    Ptr next_hash(Ptr *seed, Ptr accum) const {
+        return mod(murmur3(seed, accum));
     }
 
     /** Find and allocate the next free cell by searching randomly,
@@ -208,5 +234,4 @@ class DeviceAlloc {
 
 // FIXME: distribute initial key-space more evenly throughout index space
 // to prevent collisions?
-
 }

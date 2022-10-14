@@ -1,17 +1,24 @@
 Hash Table
 ##########
 
-The hash table is very similar to `syclhash::Alloc`.
-It provides three additional operations,
+This hash table works similarly to `syclhash::Alloc`.
+Although it provides lookup, and `insert` functions directly,
 
-  * add(grp, k, data): add a data point to the cell index `k`
+.. doxygenfunction:: syclhash::DeviceHash::operator[]
 
-  * del(grp, k, ptr): delete the data point from index `k`
+.. doxygenfunction:: syclhash::DeviceHash::insert
 
-  * next(grp, k, ptr): iterate over the data points inside `k`
+most operations on the hash-table are accomplished using
+`Bucket`-s,
+
+.. doxygenclass:: syclhash::Bucket
+   :members:
 
 These are collective calls, so each group must call add/del/next
 with the same argument.
 
 .. doxygenclass:: syclhash::Hash
+   :members:
+
+.. doxygenclass:: syclhash::DeviceHash
    :members:

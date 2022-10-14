@@ -5,32 +5,15 @@
 #include <syclhash/base.hpp>
 #include <syclhash/alloc.hpp>
 
-//> have only the leader call fn(args), all other id-s return same result
-#define apply_leader(ans, g, call) { \
-    if(g.get_local_linear_id() == 0) { \
-        ans = call; \
-    } \
-    ans = sycl::select_from_group(g, ans, 0); \
-}
-
 namespace syclhash {
-
-// have only the leader call fn(args), all other id-s return same result
-// This approach confuses the compiler with:
-// error: reference to non-static member function must be called
-/*
-template <typename Ret, typename Group, typename F, typename... Args>
-Ret apply_leader(Group g, F fn, Args... args) {
-    Ret ans;
-    if(g.get_local_linear_id() == 0) {
-        ans = fn(args...);
-    }
-    return sycl::select_from_group(g, ans, 0);
-}*/
 
 template <typename T, sycl::access::mode Mode>
 class DeviceHash;
 
+/** Hash table. Store key:value pairs, where key is Ptr type.
+ *
+ * @tparam T type of values held in the table.
+ */
 template <typename T>
 class Hash {
     template <typename U, sycl::access::mode Mode>
@@ -42,8 +25,13 @@ class Hash {
     sycl::buffer<Ptr, 1>      next; // `next` pointer for each cell
 
   public:
-    const int size_expt;
+    const int size_expt; ///< Base-2 log of the max hash-table size.
 
+    /** Allocate and initialize space for max 2**size_expt items.
+     *
+     * @arg size_expt exponent of the allocator's size
+     * @arg queue SYCL queue to use when initializing free_list
+     */
     Hash(int size_expt, sycl::queue &queue)
         : alloc(size_expt, queue)
         , cell(1 << size_expt)
@@ -66,13 +54,21 @@ class Hash {
     }
 };
 
-/** Iterate through a linked list of cells.
+/** A Bucket points to the set of values in the hash
+ * table with the given key.
+ *
+ * The real work is done with iterators, created
+ * through the bucket's begin(g) and end(g) calls.
  *
  * Example:
  *
- *     for(T &val : dh.get(key)) {
+ *     auto bucket = dh[key];
+ *     for(const T &val = bucket.begin(g); val != bucket.end(g); ++val) {
  *         printf("%lu %lu\n", key, val);
  *     } printf("\n");
+ *
+ * @tparam T type of values held in the Bucket
+ * @tparam Mode accessor mode for interacting with the bucket
  *
  */
 template<class T, sycl::access::mode Mode>
@@ -81,11 +77,15 @@ class Bucket {
 
   public:
     const Ptr key;
+    using value_type = T;
 
+    /** Construct the Bucket for `dh`
+     * that points at `key`.
+     */
     Bucket(DeviceHash<T,Mode> &dh, Ptr key)
             : dh(dh), key(key) {}
 
-    /** iterator = a cursor pointing at a specific cell in a linked list.
+    /** A cursor pointing at a specific cell in the Bucket.
      */
     class iterator {
         friend class Bucket<T,Mode>;
@@ -128,20 +128,24 @@ class Bucket {
         using reference = T &;
         using pointer = T *;
 
-        //< Is this cursor over an empty cell?
+        // Is this cursor over an empty cell?
         // (due to potential parallel acccess,
         //  this function would not be stable)
         //bool is_empty() {
         //    return dh.keys[index] == null_ptr;
         //}
-        //< Is this cursor a null-pointer?
+
+        /// Is this cursor a null-pointer?
         bool is_null() const {
             return index == null_ptr;
         }
 
+        /// Access the value this iterator refers to.
         reference operator *() const {
             return dh.get_cell(index);
         }
+
+        /// Erase the key:value pair this iterator refers to.
         bool erase() {
             bool ret;
             //return apply_leader<bool>(grp, dh.erase_key, index, key);
@@ -149,14 +153,14 @@ class Bucket {
             return ret;
         }
 
-        // pre-increment
+        /// pre-increment
         iterator &operator++() {
             if(index != null_ptr) {
                 seek(grp, true);
             }
             return *this;
         }
-        // post-increment
+        /// post-increment
         iterator operator++(int) {
             iterator tmp = *this;
             ++(*this);
@@ -170,6 +174,11 @@ class Bucket {
         };
     };
 
+    /** Create an iterator pointing to the first cell
+     *  contained in this Bucket.
+     *
+     * @arg grp collective group that will access the iterator
+     */
     iterator begin(sycl::group<1> grp) {
         /* This special case is correct, but not needed.
          * Because unoccupied cells must have next set to null_ptr,
@@ -179,14 +188,36 @@ class Bucket {
         }*/
         return iterator(grp, dh, key, dh.mod(key));
     }
+
+    /** Create an iterator pointing to the end
+     *  of this Bucket.
+     *
+     * @arg grp collective group that will access the iterator
+     */
     iterator end(sycl::group<1> grp) {
         return iterator(grp, dh, key, null_ptr);
     }
 
     /** Put a new value into this bucket.
      *
-     *  Return the iterator where value was successfully placed.
-     *  Note - on error, iterator will be == end(grp), a null_ptr.
+     *  This is implemented via a call to DeviceHash::set_key,
+     *  which acquires the key (replacing it with `null_ptr-1`),
+     *  sets the value, then releases the key (replacing it with `key`).
+     *
+     *  @return iterator where value was successfully placed,
+     *          or end(grp) on failure.
+     *
+     *  .. note::
+     *
+     *      The bucket is unordered, so there are no guarantees
+     *      as to what relative location the value will be inserted.
+     *
+     *  .. note::
+     *
+     *      If value read/write and key deletion are happening concurrently
+     *      by different threads, there is a chance that previous
+     *      threads accessing the cell may still be using it
+     *      (if they are unaware that someone had deleted it).
      */
     iterator insert(sycl::group<1> grp, const T& value) {
         Ptr index = dh.mod(key);
@@ -236,12 +267,32 @@ class Bucket {
 
     /** Return true if index was deleted, false if it was not present.
      *
-     * Caution: Regardless of the output of this call,
-     *          your cursor is now invalid.
+     *  Internally, we set the `key` to `null_ptr`
+     *  for deleted keys. These are skipped over
+     *  during bucket iteration.
      *
-     * Note: internally, we set the `key` to `null_ptr`
-     * for deleted keys.
-     * These are skipped over during bucket iteration.
+     *  This happens via a call to DeviceHash::erase_key, which
+     *  has release memory-ordering semantics.
+     *
+     *  Regardless of the output of this call,
+     *  your cursor is now invalid.
+     *
+     * .. warning::
+     * 
+     *     If value accesses, inserting and erasing are all happening
+     *     concurrently by different threads, it is up to you to stop other
+     *     readers & writers of the cell's value from accessing it.
+     *     You must ensure this before you delete it!
+     *     Those other potential accessors include everyone with
+     *     an iterator pointing at this same position (since
+     *     the iterator can be dereferenced).
+     *
+     *     Otherwise, you run the risk that the cell may be allocated
+     *     again (potentially with a different key), and written
+     *     into.
+     *
+     *     Technically, erasing without any concurrent insertions
+     *     would leave the value dedicated, but no longer referenced.
      */
     bool erase(iterator position) {
         return position.erase();
@@ -253,6 +304,9 @@ class Bucket {
  * Max capacity = 1<<size_expt key/value pairs.
  *
  * Requires size_expt < 32
+ *
+ * @tparam T type of values held in the table.
+ * @tparam Mode access mode for DeviceHash
  */
 template <typename T, sycl::access::mode Mode>
 class DeviceHash {
@@ -265,6 +319,11 @@ class DeviceHash {
     DeviceAlloc<Mode>                alloc;
     const int size_expt;
 
+    /** Construct from the host Hash class.
+     *
+     * @arg h host alloc class
+     * @arg cgh SYCL handler
+     */
     DeviceHash(Hash<T> &h, sycl::handler &cgh)
         : cell(h.cell, cgh)
         , keys(h.keys, cgh)
@@ -285,7 +344,8 @@ class DeviceHash {
         return Bucket<T,Mode>(*this, key);
     }
 
-    /** Convenience function to insert a key,value pair.
+    /** Convenience function to insert `value`
+     * to the :class:`Bucket` at the given `key`
      */
     template <typename Group>
     typename Bucket<T,Mode>::iterator
@@ -294,13 +354,13 @@ class DeviceHash {
         return bucket.insert(g, value);
     }
 
-    //> Set the key (assumes no potential contention on key)
+    /// Set the key (assumes no potential contention on key)
     void set_key_unsafe(Ptr loc, Ptr key, const T &value) {
         keys[loc] = key;
         cell[loc] = value;
     }
 
-    //> Used to read a cell value.
+    /// Used to read a cell value.
     T &get_cell(Ptr loc) {
         return cell[loc];
     }
@@ -328,7 +388,7 @@ class DeviceHash {
         return true;
     }
 
-    //> Erase the key at index (by overwriting key with null_ptr)
+    /// Erase the key at index (by overwriting key with null_ptr)
     bool erase_key(Ptr index, Ptr key) {
         if(index == null_ptr) return false;
         auto v = sycl::atomic_ref<
@@ -341,7 +401,7 @@ class DeviceHash {
     }
 
 
-    //> Link key -> loc by setting last next-ptr from key
+    /// Link key -> loc by setting last next-ptr from key
     void set_last(Ptr key, Ptr loc) {
         Ptr val = null_ptr;
         while(1) {
@@ -362,6 +422,12 @@ class DeviceHash {
      * returns true if keys[index] == search
      * false if keys[index] != search OR if index == null_ptr
      * (in which case next[index] == null_ptr)
+     *
+     * .. note::
+     *
+     *     Different concurrent workers may not traverse
+     *     the list in the same way!  Use within `apply_leader`
+     *     if you need consistency.
      */
     bool seek(Ptr &index, Ptr search, bool fwd) {
         if(fwd) {
@@ -376,7 +442,13 @@ class DeviceHash {
         return true;
     }
 
-    /** Seek to the end of the list.
+    /** Seek to the end of the linked-list starting at `index`.
+     *
+     * .. note::
+     *
+     *     Different concurrent workers may not traverse
+     *     the list in the same way!  Use within `apply_leader`
+     *     if you need consistency.
      */
     Ptr seek_end(Ptr index) {
         // seek to end of linked-list
