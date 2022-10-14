@@ -99,17 +99,18 @@ class Bucket {
 
     /** A cursor pointing at a specific cell in the Bucket.
      */
+    template <typename Group>
     class iterator {
         friend class Bucket<T,Mode>;
         DeviceHash<T,Mode> &dh;
         Ptr index;
-        sycl::group<1> grp;
+        Group grp;
     
         /** Only friends can construct iterators.
          */
-        iterator(sycl::group<1> g, DeviceHash<T,Mode> &dh, Ptr key, Ptr index)
+        iterator(Group g, DeviceHash<T,Mode> &dh, Ptr key, Ptr index)
                 : dh(dh), index(index), key(key), grp(g) {
-            seek(g, false);
+            seek(false);
         }
 
         /** Seek forward to the next valid index --
@@ -119,12 +120,11 @@ class Bucket {
          * if fwd == true, then seek will start by advancing
          * to next[index]
          */
-        template <typename Group>
-        void seek(Group g, bool fwd) {
+        void seek(bool fwd) {
             bool ret;
-            apply_leader(ret, g, dh.seek(index, key, fwd));
-            if( ret ) { //apply_leader<Ptr>(g, dh.seek, index, key)
-                index = sycl::select_from_group(g, index, 0);
+            apply_leader(ret, grp, dh.seek(index, key, fwd));
+            if( ret ) { //apply_leader<Ptr>(grp, dh.seek, index, key)
+                index = sycl::select_from_group(grp, index, 0);
             } else {
                 index = null_ptr;
             }
@@ -168,7 +168,7 @@ class Bucket {
         /// pre-increment
         iterator &operator++() {
             if(index != null_ptr) {
-                seek(grp, true);
+                seek(true);
             }
             return *this;
         }
@@ -191,14 +191,15 @@ class Bucket {
      *
      * @arg grp collective group that will access the iterator
      */
-    iterator begin(sycl::group<1> grp) {
+    template <typename Group>
+    iterator<Group> begin(Group grp) {
         /* This special case is correct, but not needed.
          * Because unoccupied cells must have next set to null_ptr,
          * seek() will find next[key] == null_ptr.
         if(!dh.alloc.occupied(key)) {
             return end(grp);
         }*/
-        return iterator(grp, dh, key, dh.mod(key));
+        return iterator<Group>(grp, dh, key, dh.mod(key));
     }
 
     /** Create an iterator pointing to the end
@@ -206,8 +207,9 @@ class Bucket {
      *
      * @arg grp collective group that will access the iterator
      */
-    iterator end(sycl::group<1> grp) {
-        return iterator(grp, dh, key, null_ptr);
+    template <typename Group>
+    iterator<Group> end(Group grp) {
+        return iterator<Group>(grp, dh, key, null_ptr);
     }
 
     /** Put a new value into this bucket.
@@ -231,7 +233,8 @@ class Bucket {
      *      threads accessing the cell may still be using it
      *      (if they are unaware that someone had deleted it).
      */
-    iterator insert(sycl::group<1> grp, const T& value) {
+    template <typename Group>
+    iterator<Group> insert(Group grp, const T& value) {
         Ptr index = dh.mod(key);
         // special case -- first insertion
         //if(dh.keys[index] == null_ptr && dh.alloc.try_alloc(grp, index)) {
@@ -259,7 +262,7 @@ class Bucket {
                 apply_leader(ok, grp, dh.set_key(index, key, value));
                 //if( apply_leader<bool>(grp, dh.set_key, index, key, value) ) {
                 if(ok) {
-                    return iterator(grp, dh, key, index);
+                    return iterator<Group>(grp, dh, key, index);
                 }
             } else {
                 // reached end: allocate a new slot
@@ -272,7 +275,7 @@ class Bucket {
                     // now that we have it, we must put loc at the end
                     dh.set_last(key, loc);
                 }
-                return iterator(grp, dh, key, loc);
+                return iterator<Group>(grp, dh, key, loc);
             }
         };
     }
@@ -306,7 +309,8 @@ class Bucket {
      *     Technically, erasing without any concurrent insertions
      *     would leave the value dedicated, but no longer referenced.
      */
-    bool erase(iterator position) {
+    template <typename Group>
+    bool erase(iterator<Group> position) {
         return position.erase();
     }
 };
@@ -360,7 +364,7 @@ class DeviceHash {
      * to the :class:`Bucket` at the given `key`
      */
     template <typename Group>
-    typename Bucket<T,Mode>::iterator
+    typename Bucket<T,Mode>::template iterator<Group>
     insert(Group g, Ptr key, const T&value) {
         Bucket<T,Mode> bucket = (*this)[key];
         return bucket.insert(g, value);
