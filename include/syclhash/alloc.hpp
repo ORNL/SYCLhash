@@ -9,16 +9,6 @@ namespace syclhash {
 template <sycl::access::mode Mode>
 class DeviceAlloc;
 
-// FIXME: check other laptop for faster implementation
-int ctz(Ptr x) {
-    for(int ans=0; ans<32; ans++) {
-        if( (x>>ans)&1 ) {
-            return ans;
-        }
-    }
-    return 32;
-}
-
 /** Allocator. Uses a free-list to manage
  *  chunks of identically sized memory.
  *
@@ -29,7 +19,7 @@ class Alloc {
     friend class DeviceAlloc;
 
     sycl::buffer<uint32_t, 1> free_list; // bitmask for free cells
-    const int size_expt;
+    int size_expt;
 
   public:
     /** Allocate and initialize space for max 2**size_expt items.
@@ -45,6 +35,10 @@ class Alloc {
             throw std::invalid_argument("2**size_expt is too large.");
         }
 
+        reset(queue);
+    }
+
+    void reset(sycl::queue &queue) {
         queue.submit([&](sycl::handler &cgh){
             sycl::accessor F{free_list, cgh, sycl::write_only, sycl::no_init};
             cgh.fill(F, (uint32_t)0);
@@ -70,9 +64,9 @@ class Alloc {
 template <sycl::access::mode Mode>
 class DeviceAlloc {
     sycl::accessor<uint32_t, 1, Mode> free_list; // bitmask for free cells
+    int size_expt;
 
   public:
-    const int size_expt;
 
     /** Construct from the host Alloc class.
      *

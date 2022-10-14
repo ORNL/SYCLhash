@@ -23,9 +23,21 @@ class Hash {
     sycl::buffer<T,1>         cell;
     sycl::buffer<Ptr, 1>      keys; // key for each cell
     sycl::buffer<Ptr, 1>      next; // `next` pointer for each cell
+    int size_expt;            ///< Base-2 log of the max hash-table size.
+
+    /// Reset just keys and next pointers (sufficient for new allocator).
+    void reset_kn(sycl::queue &queue) {
+        queue.submit([&](sycl::handler &cgh){
+            sycl::accessor K{keys, cgh, sycl::write_only, sycl::no_init};
+            cgh.fill(K, null_ptr);
+        });
+        queue.submit([&](sycl::handler &cgh){
+            sycl::accessor N{next, cgh, sycl::write_only, sycl::no_init};
+            cgh.fill(N, null_ptr);
+        });
+    }
 
   public:
-    const int size_expt; ///< Base-2 log of the max hash-table size.
 
     /** Allocate and initialize space for max 2**size_expt items.
      *
@@ -43,14 +55,14 @@ class Hash {
             throw std::invalid_argument("2**size_expt is too large.");
         }
 
-        queue.submit([&](sycl::handler &cgh){
-            sycl::accessor K{keys, cgh, sycl::write_only, sycl::no_init};
-            cgh.fill(K, null_ptr);
-        });
-        queue.submit([&](sycl::handler &cgh){
-            sycl::accessor N{next, cgh, sycl::write_only, sycl::no_init};
-            cgh.fill(N, null_ptr);
-        });
+        reset_kn(queue);
+    }
+
+    /** Reset this structure to empty.
+     */
+    void reset(sycl::queue &queue) {
+        alloc.reset(queue);
+        reset_kn(queue);
     }
 };
 

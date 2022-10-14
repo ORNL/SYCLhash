@@ -7,6 +7,36 @@ namespace syclhash {
 typedef uint32_t Ptr; ///< Pointers are 32-bit unsigned ints.
 static const Ptr null_ptr = ~(Ptr)0; ///< Addressable space is 2**32-2
 
+int ctz(const uint32_t x) {
+    int ans = 0;
+    if(x == 0) return 32;
+
+    // Binary search to find first 1 set.
+    for(int level=16; level>0; level=level/2) {
+        // low-order "level" number of bits
+        uint32_t mask = ((~(uint32_t)0) >> (32-level)) << ans;
+        if((x & mask) == 0) { // not in low-order "level" bits
+            ans += level;
+        }
+    }
+    return ans;
+}
+
+int ctz(const uint64_t x) {
+    int ans = 0;
+    if(x == 0) return 64;
+
+    // Binary search to find first 1 set.
+    for(int level=32; level>0; level=level/2) {
+        // low-order "level" number of bits
+        uint64_t mask = ((~(uint64_t)0) >> (64-level)) << ans;
+        if((x & mask) == 0) { // not in low-order "level" bits
+            ans += level;
+        }
+    }
+    return ans;
+}
+
 /// have only the leader call fn(args), all other id-s return same result
 #define apply_leader(ans, g, call) { \
     if(g.get_local_linear_id() == 0) { \
