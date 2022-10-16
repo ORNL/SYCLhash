@@ -14,8 +14,8 @@ int ctz(const uint32_t x) {
     // Binary search to find first 1 set.
     for(int level=16; level>0; level=level/2) {
         // low-order "level" number of bits
-        uint32_t mask = ((~(uint32_t)0) >> (32-level)) << ans;
-        if((x & mask) == 0) { // not in low-order "level" bits
+        uint32_t mask = (~(uint32_t)0) >> (32-level);
+        if(((x>>ans) & mask) == 0) { // not in low-order "level" bits
             ans += level;
         }
     }
@@ -29,8 +29,8 @@ int ctz(const uint64_t x) {
     // Binary search to find first 1 set.
     for(int level=32; level>0; level=level/2) {
         // low-order "level" number of bits
-        uint64_t mask = ((~(uint64_t)0) >> (64-level)) << ans;
-        if((x & mask) == 0) { // not in low-order "level" bits
+        uint64_t mask = (~(uint64_t)0) >> (64-level);
+        if(((x>>ans) & mask) == 0) { // not in low-order "level" bits
             ans += level;
         }
     }

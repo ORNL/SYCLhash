@@ -17,6 +17,16 @@ void show(sycl::group<1> g, const sycl::stream &out, int id, T &x) {
         out << ans.c_str();
 }
 
+template <typename T>
+void show_fn(sycl::nd_item<1> it, Ptr key, T &val, const sycl::stream &out) {
+    sycl::group<1> g = it.get_group();
+    if(g.get_local_id()[0] != 0) return;
+    std::stringstream ss;
+    ss << key << " : " << val << "\n";
+    std::string ans(ss.str());
+    out << ans.c_str();
+}
+
 int main() {
     typedef int T;
     sycl::queue q;
@@ -51,13 +61,21 @@ int main() {
                 show(g, out, gid, bucket);
             }
 
+            /*
             if(1) {
                 auto bucket = dh[ gid ];
                 bucket.insert(g, 4+10*gid);
                 bucket.insert(g, 5+10*gid);
                 show(g, out, gid, bucket);
-            }
+            }*/
         });
+    });
+    
+    // Submit a second kernel showing all key:value pairs
+    q.submit([&](sycl::handler &cgh) {
+        DeviceHash<T,sycl::access::mode::read_write> dh(hash, cgh);
+        sycl::stream out(1024, 256, cgh);
+        dh.parallel_for(cgh, sycl::nd_range<1>(1024, 32), show_fn<int>, out);
     });
 
     return 0;
