@@ -136,9 +136,12 @@ class Bucket {
         using iterator_category = std::forward_iterator_tag;
         using difference_type = size_t;
 
-        using value_type = T;
-        using reference = T &;
-        using pointer = T *;
+        using value_type = std::conditional_t<Mode == sycl::access::mode::read,
+                       const T, T >;
+        using reference = std::conditional_t<Mode == sycl::access::mode::read,
+                       const T&, T& >;
+        using pointer = std::conditional_t<Mode == sycl::access::mode::read,
+                       const T*, T* >;
 
         // Is this cursor over an empty cell?
         // (due to potential parallel acccess,
@@ -372,11 +375,14 @@ class DeviceHash {
         // special case -- first insertion
         //if(keys[index] == null_ptr && dh.alloc.try_alloc(grp, index)) {
         if(alloc.try_alloc(grp, index)) {
-            bool ret;
-            do {
-                apply_leader(ret, grp, set_key(index, key, value));
-            } while(!ret);
-            //while(!apply_leader<bool>(grp, set_key, index, key, value)) {}
+            if(grp.get_local_linear_id() == 0) {
+                keys[index]  = key;
+                cell[index] = value;
+                //bool ret;
+                //do {
+                //    ret = set_key(index, key, value);
+                //} while(!ret);
+            }
             return index;
         }
         // below: canonical index is already allocated somewhere.
@@ -415,13 +421,11 @@ class DeviceHash {
     }
 
     /// Low-level function used to read a cell value using a Ptr index.
-    T &get_cell(Ptr loc) const {
+    std::conditional_t<Mode == sycl::access::mode::read,
+                       const T&, T& >
+    get_cell(Ptr loc) const {
         return cell[loc];
     }
-
-    /*const T &get_cell(Ptr loc) const {
-        return cell[loc];
-    }*/
 
     /** Where key was null_ptr, set to key
      *  and fill its value atomically.

@@ -37,16 +37,17 @@ int main() {
     q.submit([&](sycl::handler &cgh) {
         //sycl::accessor X{ans, cgh, sycl::write_only, sycl::no_init};
         //DeviceHash<T,sycl::access::mode::discard_write> dh(hash, cgh);
-        DeviceHash<T,sycl::access::mode::read_write> dh1(hash, cgh);
+        DeviceHash<T,sycl::access::mode::read_write> dh(hash, cgh);
         sycl::stream out(1024, 256, cgh);
 
         cgh.parallel_for(sycl::nd_range<1>(16,4), [=](sycl::nd_item<1> it) {
-            DeviceHash<T,sycl::access::mode::read_write> dh( dh1 );
+            //DeviceHash<T,sycl::access::mode::read_write> dh( dh1 );
             int gid = it.get_group(0);
             sycl::group<1> g = it.get_group();
 
             {
                 auto bucket = dh[gid];
+                ++bucket.begin(g);
                 bucket.insert(g, 1+10*gid);
                 bucket.insert(g, 2+10*gid);
                 bucket.insert(g, 3+10*gid);

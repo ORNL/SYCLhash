@@ -7,7 +7,7 @@ namespace syclhash {
 typedef uint32_t Ptr; ///< Pointers are 32-bit unsigned ints.
 static const Ptr null_ptr = ~(Ptr)0; ///< Addressable space is 2**32-2
 
-int ctz(const uint32_t x) {
+inline int ctz(const uint32_t x) {
     int ans = 0;
     if(x == 0) return 32;
 
@@ -22,7 +22,7 @@ int ctz(const uint32_t x) {
     return ans;
 }
 
-int ctz(const uint64_t x) {
+inline int ctz(const uint64_t x) {
     int ans = 0;
     if(x == 0) return 64;
 
