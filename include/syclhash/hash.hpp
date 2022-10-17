@@ -311,6 +311,21 @@ class DeviceHash {
         //, count(h.cell.get_count()) // max capacity
         { }
 
+    /** Increment index in a pseudo-random way
+     *
+     * Combining `seed` with `accum`,
+     * stores the result in `seed`, then
+     * returns an index (computed from the output seed)
+     * within the addressable range.
+     *
+     * Implementation note: Consumers of this function
+     * require seed to make progress even for accum == 0.
+     *
+     */
+    Ptr next_hash(Ptr *seed, Ptr accum) const {
+        return mod(murmur3(seed, accum));
+    }
+
     /** Apply the function to every key,value pair.
      *  Each key is processed by a whole group.
      *
@@ -335,7 +350,7 @@ class DeviceHash {
                ;       i < count
                ;       i += g.get_group_linear_range()) {
                 //Ptr key = sycl::select_from_group(g, keys[i], 0);
-                Ptr ky = keys[i];
+                Ptr key = keys[i];
                 if(key == null_ptr) continue;
                 fn(it, key, cell[i], args ...);
             }

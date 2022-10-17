@@ -78,6 +78,16 @@ class DeviceAlloc {
         , size_expt(h.size_expt)
         { }
 
+
+    /// Count number of used slots at this super-index.
+    int count(Ptr si) const {
+        // https://graphics.stanford.edu/~seander/bithacks.html
+        uint32_t v = free_list[si];
+        v = v - ((v >> 1) & 0x55555555);
+        v = (v & 0x33333333) + ((v >> 2) & 0x33333333);
+        return ((v + (v >> 4) & 0xF0F0F0F) * 0x1010101) >> 24;
+    }
+
     /** Leading thread from Group g calls try_alloc.
      *
      * Every group member will return the same result:
@@ -109,7 +119,7 @@ class DeviceAlloc {
 
         const Ptr mask = 1 << j;
         auto v = sycl::atomic_ref<
-                        uint32_t, sycl::memory_order::relaxed,
+                        uint32_t, sycl::memory_order::acquire,
                         sycl::memory_scope::device,
                         sycl::access::address_space::global_space>(
                                 free_list[i]);
@@ -124,7 +134,7 @@ class DeviceAlloc {
 
         Ptr mask = 1 << j;
         auto v = sycl::atomic_ref<
-                        uint32_t, sycl::memory_order::relaxed,
+                        uint32_t, sycl::memory_order::release,
                         sycl::memory_scope::device,
                         sycl::access::address_space::global_space>(
                                 free_list[i]);
