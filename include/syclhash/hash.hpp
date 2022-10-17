@@ -334,9 +334,35 @@ class DeviceHash {
             for(size_t i = g.get_group_linear_id()
                ;       i < count
                ;       i += g.get_group_linear_range()) {
-                Ptr key = keys[i];
+                //Ptr key = sycl::select_from_group(g, keys[i], 0);
+                Ptr ky = keys[i];
                 if(key == null_ptr) continue;
                 fn(it, key, cell[i], args ...);
+            }
+        });
+    }
+    template <typename R, int D1, int Dim, typename Fn, typename ...Args>
+    void parallel_for(sycl::handler &cgh,
+                      sycl::buffer<R,D1> &ret,
+                      sycl::nd_range<Dim> rng,
+                      Fn fn, Args ... args) const {
+        sycl::accessor<T, 1, Mode>    cell(this->cell);
+        sycl::accessor<R, D1>         ret1(ret, cgh, sycl::read_write);
+        sycl::accessor<Ptr, 1, Mode>  keys(this->keys);
+        const size_t count = 1 << size_expt;
+
+        cgh.parallel_for(rng,
+                sycl::reduction(ret1, sycl::plus<R>()),
+                [=](sycl::nd_item<1> it, auto &ans) {
+            sycl::group<1> g = it.get_group();
+            for(size_t i = g.get_group_linear_id()
+               ;       i < count
+               ;       i += g.get_group_linear_range()) {
+                //Ptr key = sycl::select_from_group(g, keys[i], 0);
+                Ptr key = keys[i];
+                if(key == null_ptr) continue;
+                R tmp = fn(it, key, cell[i], args ...);
+                ans += tmp;
             }
         });
     }
