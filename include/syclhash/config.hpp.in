@@ -1,6 +1,7 @@
 #ifndef _SHASH_CONFIG_H
 #define _SHASH_CONFIG_H
 
+//#define DEBUG_SYCLHASH
 #include <CL/sycl.hpp>
 
 #define SHASH_VERSION_MAJOR @SHASH_VERSION_MAJOR@
@@ -8,6 +9,19 @@
 
 namespace syclhash {
 namespace sycl = cl::sycl;
+
+typedef uint64_t warpMaskT;
+/** Return a bitmask indicating whether each group
+ * member has the given predicate set to `true`.
+ */
+template <typename Group>
+warpMaskT ballot(Group sg, int predicate) {
+    //assert(sg.get_local_range().size() <= sizeof(warpMaskT)*8);
+    const size_t id = sg.get_local_linear_id();
+    const warpMaskT local_val = (predicate ? 1u : 0u) << id;
+    return sycl::reduce_over_group(sg, local_val, sycl::plus<warpMaskT>());
+}
+
 }
 
 #endif

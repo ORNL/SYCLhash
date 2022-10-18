@@ -6,20 +6,19 @@ namespace syclhash {
 
 typedef uint32_t Ptr; ///< Pointers are 32-bit unsigned ints.
 static const Ptr null_ptr = ~(Ptr)0; ///< Addressable space is 2**32-2
+static const Ptr reserved = (~(Ptr)0) ^ 1; ///< mark reserved
+static const Ptr erased   = (~(Ptr)0) ^ 3; ///< mark erased
 
-inline int ctz(const uint32_t x) {
+inline int ctz(uint32_t x) {
     int ans = 0;
-    if(x == 0) return 32;
-
-    // Binary search to find first 1 set.
-    for(int level=16; level>0; level=level/2) {
-        // low-order "level" number of bits
-        uint32_t mask = (~(uint32_t)0) >> (32-level);
-        if(((x>>ans) & mask) == 0) { // not in low-order "level" bits
-            ans += level;
-        }
-    }
-    return ans;
+    int c = 32; // c will be the number of zero bits on the right
+    x &= -int32_t(x);
+    if (x & 0x0000FFFF) c -= 16;
+    if (x & 0x00FF00FF) c -= 8;
+    if (x & 0x0F0F0F0F) c -= 4;
+    if (x & 0x33333333) c -= 2;
+    if (x & 0x55555555) c -= 1;
+    return c;
 }
 
 inline int ctz(const uint64_t x) {

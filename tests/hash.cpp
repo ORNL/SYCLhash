@@ -27,17 +27,16 @@ void show_fn(sycl::nd_item<1> it, Ptr key, T &val, const sycl::stream &out) {
     out << ans.c_str();
 }
 
-int main() {
+int test1(sycl::queue &q) {
     typedef int T;
-    sycl::queue q;
-    // 1024 cells
-    syclhash::Hash<T> hash(10, q);
+    // 64 cells
+    syclhash::Hash<T> hash(6, q);
 
     // Submit a kernel filling and emptying hashes by group
     q.submit([&](sycl::handler &cgh) {
         //sycl::accessor X{ans, cgh, sycl::write_only, sycl::no_init};
         //DeviceHash<T,sycl::access::mode::discard_write> dh(hash, cgh);
-        DeviceHash<T,sycl::access::mode::read_write> dh(hash, cgh);
+        DeviceHash<T,sycl::access::mode::read_write,4> dh(hash, cgh);
         sycl::stream out(1024, 256, cgh);
 
         cgh.parallel_for(sycl::nd_range<1>(16,4), [=](sycl::nd_item<1> it) {
@@ -74,10 +73,73 @@ int main() {
     
     // Submit a second kernel showing all key:value pairs
     q.submit([&](sycl::handler &cgh) {
-        DeviceHash<T,sycl::access::mode::read_write> dh(hash, cgh);
+        DeviceHash<T,sycl::access::mode::read_write,4> dh(hash, cgh);
         sycl::stream out(1024, 256, cgh);
         dh.parallel_for(cgh, sycl::nd_range<1>(1024, 32), show_fn<int>, out);
     });
 
     return 0;
 }
+
+int test2(sycl::queue &q) {
+    typedef int T;
+    // 64 cells
+    syclhash::Hash<T> hash(6, q);
+
+    // Submit a kernel filling and emptying hashes by group
+    q.submit([&](sycl::handler &cgh) {
+        //sycl::accessor X{ans, cgh, sycl::write_only, sycl::no_init};
+        //DeviceHash<T,sycl::access::mode::discard_write> dh(hash, cgh);
+        DeviceHash<T,sycl::access::mode::read_write,4> dh(hash, cgh);
+        sycl::stream out(1024, 256, cgh);
+
+        cgh.parallel_for(sycl::nd_range<1>(16,4), [=](sycl::nd_item<1> it) {
+            //DeviceHash<T,sycl::access::mode::read_write> dh( dh1 );
+            int gid = it.get_group(0);
+            sycl::group<1> g = it.get_group();
+
+            {
+                auto bucket = dh[gid];
+                ++bucket.begin(g);
+                bucket.insert_unique(g, 1+10*gid);
+                bucket.insert_unique(g, 2+10*gid);
+                bucket.insert_unique(g, 3+10*gid);
+                show(g, out, gid, bucket);
+            }
+
+            // get the next index over
+            if(1) {
+                auto bucket = dh[ (gid+1)%4 ];
+                //(++bucket.begin(g)).erase();
+                bucket.begin(g).erase();
+                show(g, out, gid, bucket);
+            }
+
+            /*
+            if(1) {
+                auto bucket = dh[ gid ];
+                bucket.insert(g, 4+10*gid);
+                bucket.insert(g, 5+10*gid);
+                show(g, out, gid, bucket);
+            }*/
+        });
+    });
+    
+    // Submit a second kernel showing all key:value pairs
+    q.submit([&](sycl::handler &cgh) {
+        DeviceHash<T,sycl::access::mode::read_write,4> dh(hash, cgh);
+        sycl::stream out(1024, 256, cgh);
+        dh.parallel_for(cgh, sycl::nd_range<1>(1024, 32), show_fn<int>, out);
+    });
+
+    return 0;
+}
+
+int main() {
+    int err = 0;
+    sycl::queue q;
+    err += test1(q);
+    err += test2(q);
+    return err;
+}
+
