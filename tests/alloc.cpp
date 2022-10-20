@@ -1,4 +1,4 @@
-#include <syclhash/hash.hpp>
+#include <syclhash/alloc.hpp>
 
 struct Cell {
     int data[10];

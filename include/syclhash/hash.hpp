@@ -3,7 +3,7 @@
 #include <stdexcept>
 
 #include <syclhash/base.hpp>
-#include <syclhash/alloc.hpp>
+//#include <syclhash/alloc.hpp>
 
 namespace syclhash {
 
@@ -22,7 +22,7 @@ class Hash {
 
     static_assert(search_width < 6, "Width too large!");
 
-    Alloc                     alloc;
+    //Alloc                     alloc;
     sycl::buffer<T,1>         cell;
     sycl::buffer<Ptr,1>       keys; // key for each cell
     int size_expt;            ///< Base-2 log of the max hash-table size.
@@ -45,8 +45,8 @@ class Hash {
      * @arg queue SYCL queue to use when initializing free_list
      */
     Hash(int size_expt, sycl::queue &queue)
-        : alloc(size_expt, queue)
-        , cell(1 << size_expt)
+        : //alloc(size_expt, queue),
+          cell(1 << size_expt)
         , keys(1 << size_expt)
         , size_expt(size_expt) {
 
@@ -60,7 +60,7 @@ class Hash {
     /** Reset this structure to empty.
      */
     void reset(sycl::queue &queue) {
-        alloc.reset(queue);
+        //alloc.reset(queue);
         reset_k(queue);
     }
 };
@@ -303,24 +303,26 @@ class Bucket {
  */
 template <typename T, sycl::access::mode Mode, int size_width>
 class DeviceHash {
+    template <typename, sycl::access::mode, int>
+    friend class DeviceHash;
     //friend class Bucket<T,Mode>;
 
     sycl::accessor<T, 1, Mode>        cell;
     sycl::accessor<Ptr, 1, Mode>      keys;  // key for each cell
-    const DeviceAlloc<Mode>           alloc;
+    //const DeviceAlloc<Mode>           alloc;
   public:
     const int size_expt;
     static const int width = size_width;
 
     /** Construct from the host Hash class.
      *
-     * @arg h host alloc class
+     * @arg h host hash class
      * @arg cgh SYCL handler
      */
     DeviceHash(Hash<T,size_width> &h, sycl::handler &cgh)
         : cell(h.cell, cgh)
         , keys(h.keys, cgh)
-        , alloc(h.alloc, cgh)
+        //, alloc(h.alloc, cgh)
         , size_expt(h.size_expt)
         //, count(h.cell.get_count()) // max capacity
         { }
@@ -397,6 +399,32 @@ class DeviceHash {
         });
     }
 
+    template <typename U, sycl::access::mode Mode2, int w2, typename Fn>
+    void map(sycl::handler &cgh,
+             sycl::nd_range<1> rng,
+             const DeviceHash<U, Mode2, w2> &out,
+             Fn fn) const {
+        sycl::accessor<T, 1, Mode>    cell(this->cell);
+        sycl::accessor<U, 1, Mode2>   cell2(out.cell);
+        sycl::accessor<Ptr, 1, Mode>  keys(this->keys);
+        sycl::accessor<Ptr, 1, Mode2> keys2(out.keys);
+        const size_t count = 1 << size_expt;
+
+        cgh.parallel_for(rng,
+                [=](sycl::nd_item<1> it) {
+            sycl::group<1> g = it.get_group();
+            const int ngrp = g.get_group_linear_range();
+            for(size_t i = g.get_group_linear_id()
+               ;       i < count
+               ;       i += ngrp) {
+                Ptr key = keys[i];
+                keys2[i] = key;
+                if((key>>31) & 1) continue;
+                fn(it, key, cell[i], cell2[i]);
+            }
+        });
+    }
+
     /** Wrap the index into the valid range, [0, 2**size_expt).
      */
     Ptr mod(Ptr index) const {
@@ -441,7 +469,10 @@ class DeviceHash {
 #           ifdef DEBUG_SYCLHASH
             printf("inserting %u at %u (found %u)\n", key, i1, k1);
 #           endif
-            while(k1 == null_ptr || k1 == erased) {
+            // Note: we can't over-write erased keys
+            // in uniq mode (since insert_uniq k2, delete k2, insert_uniq k1)
+            // when k2 collides with k1 would leave an erased slot in front.
+            while(k1 == null_ptr || (!uniq && k1 == erased)) {
                 if(set_key(i1, k1, key, args...)) {
                     return Step::Complete;
                 }
