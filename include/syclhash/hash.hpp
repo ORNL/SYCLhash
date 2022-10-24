@@ -7,7 +7,7 @@
 
 namespace syclhash {
 
-template <typename T, sycl::access::mode Mode, int search_width>
+template <typename, int, sycl::access::mode, sycl::access::target>
 class DeviceHash;
 
 /** Hash table. Store key:value pairs, where key is Ptr type.
@@ -17,7 +17,7 @@ class DeviceHash;
  */
 template <typename T, int search_width=4>
 class Hash {
-    template <typename, sycl::access::mode, int>
+    template <typename, int, sycl::access::mode, sycl::access::target>
     friend class DeviceHash;
 
     static_assert(search_width < 6, "Width too large!");
@@ -85,30 +85,38 @@ enum class Step {
  *     } printf("\n");
  *
  * @tparam T type of values held in the Bucket
+ * @tparam search_width number of bins to search linearly between random jumps
  * @tparam Mode accessor mode for interacting with the bucket
+ * @tparam accessTarget where memory accessors will live
  *
  */
-template<class T, sycl::access::mode Mode, int search_width=4>
+template<class T,
+         int search_width,
+         sycl::access::mode Mode,
+         sycl::access::target accessTarget
+                 = sycl::access::target::global_buffer>
 class Bucket {
-    const DeviceHash<T,Mode,search_width> &dh;
+    const DeviceHash<T,search_width,Mode,accessTarget> &dh;
 
   public:
     const Ptr key;
     using value_type = T;
-    static const int width = search_width;
+    using DeviceHashT = DeviceHash<T,search_width,Mode,accessTarget>;
+    static constexpr int width = search_width;
+    static constexpr sycl::access::target Target = accessTarget;
 
     /** Construct the Bucket for `dh`
      * that points at `key`.
      */
-    Bucket(const DeviceHash<T,Mode,search_width> &dh, Ptr key)
-            : dh(dh), key(key) {}
+    Bucket(const DeviceHashT &dh, Ptr key) : dh(dh), key(key) {}
 
     /** A cursor pointing at a specific cell in the Bucket.
      */
     template <typename Group>
     class iterator {
-        friend class Bucket<T,Mode,width>;
-        const DeviceHash<T,Mode,width> *dh;
+        friend class Bucket<T,width,Mode,accessTarget>;
+
+        const DeviceHashT *dh;
         static const int width = search_width;
         Ptr key;
         Ptr index;
@@ -116,7 +124,7 @@ class Bucket {
     
         /** Only friends can construct iterators.
          */
-        iterator(Group g, const DeviceHash<T,Mode,width> *dh, Ptr key, Ptr index)
+        iterator(Group g, const DeviceHashT *dh, Ptr key, Ptr index)
                 : dh(dh), key(key), index(index), grp(g) {
             seek(false);
         }
@@ -147,6 +155,7 @@ class Bucket {
         }
 
       public:
+        using DeviceHashT = DeviceHash<T,search_width,Mode,accessTarget>;
 
         using iterator_category = std::forward_iterator_tag;
         using difference_type = size_t;
@@ -157,6 +166,15 @@ class Bucket {
                        const T&, T& >;
         using pointer = std::conditional_t<Mode == sycl::access::mode::read,
                        const T*, T* >;
+
+        iterator(const iterator &x)
+            : dh(x.dh), key(x.key), index(x.index), grp(x.grp) {}
+        iterator &operator=(const iterator &x) {
+            dh = x.dh;
+            key = x.key;
+            index = x.index;
+            return *this;
+        }
 
         // Is this cursor over an empty cell?
         // (due to potential parallel acccess,
@@ -301,30 +319,47 @@ class Bucket {
  * @tparam T type of values held in the table.
  * @tparam Mode access mode for DeviceHash
  */
-template <typename T, sycl::access::mode Mode, int size_width>
+template <typename T,
+          int search_width,
+          sycl::access::mode Mode,
+          sycl::access::target accessTarget
+              = sycl::access::target::global_buffer>
 class DeviceHash {
-    template <typename, sycl::access::mode, int>
+    template <typename,int, sycl::access::mode, sycl::access::target>
     friend class DeviceHash;
-    //friend class Bucket<T,Mode>;
 
-    sycl::accessor<T, 1, Mode>        cell;
-    sycl::accessor<Ptr, 1, Mode>      keys;  // key for each cell
-    //const DeviceAlloc<Mode>           alloc;
+    sycl::accessor<T, 1, Mode, accessTarget>   cell;
+    sycl::accessor<Ptr, 1, Mode, accessTarget> keys;  // key for each cell
+    //const DeviceAlloc<Mode,accessTarget> alloc;
   public:
+    using BucketT = Bucket<T,search_width,Mode,accessTarget>;
+    static constexpr sycl::access::target Target = accessTarget;
+    static constexpr int width = search_width;
     const int size_expt;
-    static const int width = size_width;
 
     /** Construct from the host Hash class.
      *
      * @arg h host hash class
      * @arg cgh SYCL handler
      */
-    DeviceHash(Hash<T,size_width> &h, sycl::handler &cgh)
+    DeviceHash(Hash<T,search_width> &h, sycl::handler &cgh)
         : cell(h.cell, cgh)
         , keys(h.keys, cgh)
         //, alloc(h.alloc, cgh)
         , size_expt(h.size_expt)
         //, count(h.cell.get_count()) // max capacity
+        { }
+
+    template <typename Device>
+    DeviceHash(Hash<T,search_width> &h, sycl::handler &cgh, const Device &)
+        : DeviceHash(h, cgh) { }
+
+    template <bool use=true, std::enable_if_t< use &&
+              accessTarget == sycl::access::target::host_buffer,bool> = true>
+    DeviceHash(Hash<T,search_width> &h)
+        : cell(h.cell)
+        , keys(h.keys)
+        , size_expt(h.size_expt)
         { }
 
     /** Increment index in a pseudo-random way
@@ -399,10 +434,10 @@ class DeviceHash {
         });
     }
 
-    template <typename U, sycl::access::mode Mode2, int w2, typename Fn>
+    template <typename U, sycl::access::mode Mode2, typename Fn>
     void map(sycl::handler &cgh,
              sycl::nd_range<1> rng,
-             const DeviceHash<U, Mode2, w2> &out,
+             const DeviceHash<U, width, Mode2, accessTarget> &out,
              Fn fn) const {
         sycl::accessor<T, 1, Mode>    cell(this->cell);
         sycl::accessor<U, 1, Mode2>   cell2(out.cell);
@@ -438,8 +473,8 @@ class DeviceHash {
     }
 
     /// bucket = (key % N) is the first index.
-    Bucket<T,Mode,width> operator[](Ptr key) const {
-        return Bucket<T,Mode,width>(*this, key);
+    BucketT operator[](Ptr key) const {
+        return BucketT(*this, key);
     }
 
     /** Convenience function to insert `value`
@@ -449,9 +484,9 @@ class DeviceHash {
      *                if key is found)
      */
     template <typename Group>
-    typename Bucket<T,Mode,width>::template iterator<Group>
+    typename BucketT::template iterator<Group>
     insert(Group g, Ptr key, const T&value, bool uniq) const {
-        Bucket<T,Mode,width> bucket = (*this)[key];
+        BucketT bucket = (*this)[key];
         return bucket.insert(g, value, uniq);
     }
 
@@ -489,8 +524,6 @@ class DeviceHash {
         }
         return index;
     }
-
-    
 
     /** Run through the `canonical` sequence of keys,
      * searching for null_ptr, deleted, or
@@ -619,7 +652,7 @@ class DeviceHash {
                             sycl::access::address_space::global_space>(
                                     keys[index]);
         if(!v.compare_exchange_weak(was, reserved)) {
-                            //sycl::memory_order::acquire)) {
+                            //sycl::memory_order::acquire))
             return false;
         }
         return true;
@@ -644,4 +677,24 @@ class DeviceHash {
     }
 };
 
+template<typename T, int width, class Descriptor>
+DeviceHash(Hash<T,width>&,
+           sycl::handler&,
+           hipsycl::sycl::detail::mode_tag<Descriptor>)
+    -> DeviceHash<T, width, Descriptor::mode, Descriptor::target>;
+
+template <typename T, int search_width, sycl::access::mode Mode>
+class HostHash : public DeviceHash<T, search_width, Mode,
+                                   sycl::access::target::host_buffer>
+{
+  public:
+    template <typename ...Args>
+    HostHash(Hash<T,search_width> &hash, Args... deduction_helpers)
+        : DeviceHash<T,search_width,Mode,sycl::access::target::host_buffer>(hash)
+        {}
+};
+
+template<typename T, int width, class Descriptor>
+HostHash(Hash<T,width>&, hipsycl::sycl::detail::mode_tag<Descriptor>)
+    -> HostHash<T, width, Descriptor::mode>;
 }

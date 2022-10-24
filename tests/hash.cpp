@@ -35,12 +35,10 @@ int test1(sycl::queue &q) {
     // Submit a kernel filling and emptying hashes by group
     q.submit([&](sycl::handler &cgh) {
         //sycl::accessor X{ans, cgh, sycl::write_only, sycl::no_init};
-        //DeviceHash<T,sycl::access::mode::discard_write> dh(hash, cgh);
-        DeviceHash<T,sycl::access::mode::read_write,4> dh(hash, cgh);
+        DeviceHash dh(hash, cgh, sycl::read_write);
         sycl::stream out(1024, 256, cgh);
 
         cgh.parallel_for(sycl::nd_range<1>(16,4), [=](sycl::nd_item<1> it) {
-            //DeviceHash<T,sycl::access::mode::read_write> dh( dh1 );
             int gid = it.get_group(0);
             sycl::group<1> g = it.get_group();
 
@@ -73,7 +71,7 @@ int test1(sycl::queue &q) {
     
     // Submit a second kernel showing all key:value pairs
     q.submit([&](sycl::handler &cgh) {
-        DeviceHash<T,sycl::access::mode::read_write,4> dh(hash, cgh);
+        DeviceHash dh(hash, cgh, sycl::read_write);
         sycl::stream out(1024, 256, cgh);
         dh.parallel_for(cgh, sycl::nd_range<1>(1024, 32), show_fn<int>, out);
     });
@@ -89,12 +87,10 @@ int test2(sycl::queue &q) {
     // Submit a kernel filling and emptying hashes by group
     q.submit([&](sycl::handler &cgh) {
         //sycl::accessor X{ans, cgh, sycl::write_only, sycl::no_init};
-        //DeviceHash<T,sycl::access::mode::discard_write> dh(hash, cgh);
-        DeviceHash<T,sycl::access::mode::read_write,4> dh(hash, cgh);
+        DeviceHash dh(hash, cgh, sycl::read_write);
         sycl::stream out(1024, 256, cgh);
 
         cgh.parallel_for(sycl::nd_range<1>(16,4), [=](sycl::nd_item<1> it) {
-            //DeviceHash<T,sycl::access::mode::read_write> dh( dh1 );
             int gid = it.get_group(0);
             sycl::group<1> g = it.get_group();
 
@@ -127,7 +123,7 @@ int test2(sycl::queue &q) {
     
     // Submit a second kernel showing all key:value pairs
     q.submit([&](sycl::handler &cgh) {
-        DeviceHash<T,sycl::access::mode::read_write,4> dh(hash, cgh);
+        DeviceHash dh(hash, cgh, sycl::read_write);
         sycl::stream out(1024, 256, cgh);
         dh.parallel_for(cgh, sycl::nd_range<1>(1024, 32), show_fn<int>, out);
     });
@@ -135,11 +131,26 @@ int test2(sycl::queue &q) {
     return 0;
 }
 
+int test3(sycl::queue &q) {
+    typedef int T;
+    // 64 cells
+    syclhash::Hash<T> hash(6, q);
+
+    // try some host accesses
+    HostHash dh(hash, sycl::read_write);
+
+    Ptr was = null_ptr;
+    dh.set_key(10, was, 10, 100);
+    T x = dh.get_cell(10);
+    printf("Elem: %d\n", x);
+    return x != 100;
+}
+
 int main() {
     int err = 0;
     sycl::queue q;
     err += test1(q);
     err += test2(q);
+    err += test3(q);
     return err;
 }
-
