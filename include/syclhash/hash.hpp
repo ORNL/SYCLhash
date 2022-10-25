@@ -475,13 +475,13 @@ class DeviceHash {
     /** Wrap the index into the valid range, [0, 2**size_expt).
      */
     Ptr mod(Ptr index) const {
-        return index & ((1<<(size_expt+1)) - 1);
+        return index & ((1<<size_expt) - 1);
     }
 
     /** Wrap the super-index into the valid range, [0, 2**(size_expt-width)).
      */
     Ptr mod_w(Ptr si) const {
-        return si & ((1<<(size_expt-width+1)) - 1);
+        return si & ((1<<(size_expt-width)) - 1);
     }
 
     /// bucket = (key % N) is the first index.

@@ -1,6 +1,7 @@
 #ifndef _SHASH_CONFIG_H
 #define _SHASH_CONFIG_H
 
+// Log search/insert/erase actions:
 //#define DEBUG_SYCLHASH
 #include <CL/sycl.hpp>
 
