@@ -408,13 +408,24 @@ class DeviceHash {
             }
         });
     }
-    template <typename R, int D1, int Dim, typename Fn, typename ...Args>
+
+    /** Apply the function to every key,value pair.
+     *  Each key is processed by a whole group.
+     *
+     *  The function should have type:
+     *
+     *  R fn(sycl::nd_item<Dim> it, Ptr key, T &value);
+     *
+     *  A generic nd_range<1>(1024, 32) is recommended for looping
+     *  over its key-space.
+     */
+    template <typename R, int Dim, typename Fn, typename ...Args>
     void parallel_for(sycl::handler &cgh,
-                      sycl::buffer<R,D1> &ret,
                       sycl::nd_range<Dim> rng,
+                      sycl::buffer<R,1> &ret,
                       Fn fn, Args ... args) const {
         sycl::accessor<T, 1, Mode>    cell(this->cell);
-        sycl::accessor<R, D1>         ret1(ret, cgh, sycl::read_write);
+        sycl::accessor<R, 1>         ret1(ret, cgh, sycl::read_write);
         sycl::accessor<Ptr, 1, Mode>  keys(this->keys);
         const size_t count = 1 << size_expt;
 
@@ -434,11 +445,12 @@ class DeviceHash {
         });
     }
 
-    template <typename U, sycl::access::mode Mode2, typename Fn>
+    template <typename U, int Dim, sycl::access::mode Mode2, typename Fn,
+              typename ...Args>
     void map(sycl::handler &cgh,
-             sycl::nd_range<1> rng,
+             sycl::nd_range<Dim> rng,
              const DeviceHash<U, width, Mode2, accessTarget> &out,
-             Fn fn) const {
+             Fn fn, Args ... args) const {
         sycl::accessor<T, 1, Mode>    cell(this->cell);
         sycl::accessor<U, 1, Mode2>   cell2(out.cell);
         sycl::accessor<Ptr, 1, Mode>  keys(this->keys);
@@ -455,7 +467,7 @@ class DeviceHash {
                 Ptr key = keys[i];
                 keys2[i] = key;
                 if((key>>31) & 1) continue;
-                fn(it, key, cell[i], cell2[i]);
+                fn(it, key, cell[i], cell2[i], args ...);
             }
         });
     }
@@ -680,7 +692,7 @@ class DeviceHash {
 template<typename T, int width, class Descriptor>
 DeviceHash(Hash<T,width>&,
            sycl::handler&,
-           hipsycl::sycl::detail::mode_tag<Descriptor>)
+           Descriptor)
     -> DeviceHash<T, width, Descriptor::mode, Descriptor::target>;
 
 template <typename T, int search_width, sycl::access::mode Mode>
@@ -695,6 +707,6 @@ class HostHash : public DeviceHash<T, search_width, Mode,
 };
 
 template<typename T, int width, class Descriptor>
-HostHash(Hash<T,width>&, hipsycl::sycl::detail::mode_tag<Descriptor>)
+HostHash(Hash<T,width>&, Descriptor)
     -> HostHash<T, width, Descriptor::mode>;
 }
