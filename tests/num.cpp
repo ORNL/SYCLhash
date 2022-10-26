@@ -1,5 +1,3 @@
-#include <string>
-
 #include <syclhash/hash.hpp>
 
 using namespace syclhash;
@@ -40,13 +38,17 @@ int test1(sycl::queue &q, const int width) {
     
     // Submit a second kernel showing all key:value pairs
     int N = 0;
-    {
-    sycl::buffer<int,1> ret(&N,1);
-    q.submit([&](sycl::handler &cgh) {
-        DeviceHash dh(hash, cgh, sycl::read_only);
-        dh.parallel_for(cgh, sycl::nd_range<1>(4*width, width),
-                        ret, show<int>);
-    });
+    if(1) {
+        sycl::buffer<int,1> ret(&N,1);
+        q.submit([&](sycl::handler &cgh) {
+            DeviceHash dh(hash, cgh, sycl::read_only);
+            sycl::nd_range<1> rng(groups*width, width);
+            dh.parallel_for(cgh, rng, ret, //show<int>);
+                [](sycl::nd_item<1> it, uint32_t id, const int &x) {
+                  if(it.get_local_id(0) != 0) return 0;
+                  return 1;
+            });
+        });
     }
     printf("%d occupied cells.\n", N);
 
@@ -56,8 +58,11 @@ int test1(sycl::queue &q, const int width) {
 int main() {
     int err = 0;
     sycl::queue q;
-    err += test1(q, 1);
+    //err += test1(q, 1);
     err += test1(q, 2);
     err += test1(q, 4);
+    err += test1(q, 8);
+    err += test1(q, 16);
+    err += test1(q, 32);
     return err;
 }

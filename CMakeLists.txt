@@ -5,7 +5,6 @@ list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_LIST_DIR}/cmake)
 include(rpath)
 include(install)
 
-option(BUILD_SHARED_LIBS "Build using shared libraries" ON)
 option(BUILD_TESTS "Build the tests accompanying this library." ON)
 option(BUILD_DOCS "Build the documentation accompanying this library." ON)
 
@@ -30,11 +29,6 @@ target_include_directories(syclhash INTERFACE
                             $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
                             $<INSTALL_INTERFACE:include>
                            )
-
-# lib needs PIC when BUILD_SHARED_LIBS=ON
-set_target_properties(syclhash PROPERTIES
-                      POSITION_INDEPENDENT_CODE ${BUILD_SHARED_LIBS}
-                      )
 
 ### Testing Instructions ###
 if(BUILD_TESTS)

@@ -8,6 +8,13 @@
 #define SHASH_VERSION_MAJOR @SHASH_VERSION_MAJOR@
 #define SHASH_VERSION_MINOR @SHASH_VERSION_MINOR@
 
+#ifdef DEBUG_SYCLHASH
+#define ADDRESS_CHECK(i, w) \
+    if(i>>w != 0) { printf("Invalid address %d (expt=%d)\n", i, w); }
+#else
+#define ADDRESS_CHECK(i, w)
+#endif
+
 namespace syclhash {
 namespace sycl = cl::sycl;
 

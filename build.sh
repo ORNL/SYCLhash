@@ -1,22 +1,22 @@
 #!/bin/bash
 
-find() {
-    /usr/local/spack/bin/spack find --format '{prefix}' $@ | head -n1
-}
-
-SYCL=$(find hipsycl)
-CMAKE=$(find cmake)/bin/cmake
-
-CWD=$PWD
-
 rm -fr build
 mkdir build
+
 cd build
-export CXXFLAGS="-I/usr/local/include"
-$CMAKE -DCMAKE_PREFIX_PATH=$SYCL \
-       -DCMAKE_CXX_COMPILER=$SYCL/bin/syclcc \
-       -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-       -DCMAKE_INSTALL_PREFIX=$CWD/inst \
-       ..
+PRE=/ccs/proj/stf006/rogersdd/crusher
+
+#export CXXFLAGS="-I${MPICH_DIR}/include"
+#export LDFLAGS="-L${MPICH_DIR}/lib -lmpi -L${CRAY_MPICH_ROOTDIR}/gtl/lib -lmpi_gtl_hsa"
+
+# need release build type becaue -g makes the compile super slow
+cmake -DCMAKE_PREFIX_PATH=$PRE \
+      -DCMAKE_CXX_COMPILER=$PRE/bin/syclcc \
+      -DHIPSYCL_TARGETS=hip:gfx90a \
+      -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+      -DBUILD_DOCS=OFF \
+      -DCMAKE_INSTALL_PREFIX=$PRE \
+      ..
 
 make -j4
+

@@ -117,7 +117,7 @@ class Bucket {
         friend class Bucket<T,width,Mode,accessTarget>;
 
         const DeviceHashT *dh;
-        static const int width = search_width;
+        static constexpr int width = search_width;
         Ptr key;
         Ptr index;
         Group grp;
@@ -328,9 +328,31 @@ class DeviceHash {
     template <typename,int, sycl::access::mode, sycl::access::target>
     friend class DeviceHash;
 
-    sycl::accessor<T, 1, Mode, accessTarget>   cell;
     sycl::accessor<Ptr, 1, Mode, accessTarget> keys;  // key for each cell
+    sycl::accessor<T, 1, Mode, accessTarget>   cell;
+
     //const DeviceAlloc<Mode,accessTarget> alloc;
+
+    /*  Attempt to reserve the key at index (by overwriting `was`
+     *  with reserved using relaxed semantics)
+     *
+     *  Sets `was` to the old value of the key on return
+     *  @return true if successful, false if no change
+     */
+    bool reserve_key(Ptr index, Ptr &was, Ptr key) const {
+        ADDRESS_CHECK(index, size_expt);
+        auto v = sycl::atomic_ref<
+                            Ptr, sycl::memory_order::relaxed,
+                            sycl::memory_scope::device,
+                            sycl::access::address_space::global_space>(
+                                    keys[index]);
+        if(!v.compare_exchange_weak(was, reserved)) {
+                            //sycl::memory_order::acquire))
+            return false;
+        }
+        return true;
+    }
+
   public:
     using BucketT = Bucket<T,search_width,Mode,accessTarget>;
     static constexpr sycl::access::target Target = accessTarget;
@@ -343,8 +365,8 @@ class DeviceHash {
      * @arg cgh SYCL handler
      */
     DeviceHash(Hash<T,search_width> &h, sycl::handler &cgh)
-        : cell(h.cell, cgh)
-        , keys(h.keys, cgh)
+        : keys(h.keys, cgh)
+        , cell(h.cell, cgh)
         //, alloc(h.alloc, cgh)
         , size_expt(h.size_expt)
         //, count(h.cell.get_count()) // max capacity
@@ -357,8 +379,8 @@ class DeviceHash {
     template <bool use=true, std::enable_if_t< use &&
               accessTarget == sycl::access::target::host_buffer,bool> = true>
     DeviceHash(Hash<T,search_width> &h)
-        : cell(h.cell)
-        , keys(h.keys)
+        : keys(h.keys)
+        , cell(h.cell)
         , size_expt(h.size_expt)
         { }
 
@@ -374,8 +396,8 @@ class DeviceHash {
     uint32_t next_hash(uint32_t seed) const {
         const uint32_t a = 1664525;
         const uint32_t c = 1; //1013904223;
-        seed = (uint32_t) ( (uint64_t)(a)*(uint64_t)mod_w(seed>>width) + c );
-        return mod_w(seed) << width;
+        seed = (uint32_t) ( (uint64_t)(a)*(uint64_t)mod_w(seed>>search_width) + c );
+        return mod_w(seed) << search_width;
     }
 
     /** Apply the function to every key,value pair.
@@ -392,12 +414,11 @@ class DeviceHash {
     void parallel_for(sycl::handler &cgh,
                       sycl::nd_range<Dim> rng,
                       Fn fn, Args ... args) const {
-        sycl::accessor<T, 1, Mode>    cell(this->cell);
-        sycl::accessor<Ptr, 1, Mode>  keys(this->keys);
         const size_t count = 1 << size_expt;
 
-        cgh.parallel_for(rng, [=](sycl::nd_item<1> it) {
-            sycl::group<1> g = it.get_group();
+        cgh.parallel_for(rng, [=, keys=this->keys, cell=this->cell]
+                (sycl::nd_item<Dim> it) {
+            sycl::group<Dim> g = it.get_group();
             for(size_t i = g.get_group_linear_id()
                ;       i < count
                ;       i += g.get_group_linear_range()) {
@@ -424,22 +445,21 @@ class DeviceHash {
                       sycl::nd_range<Dim> rng,
                       sycl::buffer<R,1> &ret,
                       Fn fn, Args ... args) const {
-        sycl::accessor<T, 1, Mode>    cell(this->cell);
-        sycl::accessor<R, 1>         ret1(ret, cgh, sycl::read_write);
-        sycl::accessor<Ptr, 1, Mode>  keys(this->keys);
+        sycl::accessor<R, 1>  d_ret(ret, cgh, sycl::read_write);
         const size_t count = 1 << size_expt;
 
         cgh.parallel_for(rng,
-                sycl::reduction(ret1, sycl::plus<R>()),
-                [=](sycl::nd_item<1> it, auto &ans) {
-            sycl::group<1> g = it.get_group();
+                sycl::reduction(d_ret, sycl::plus<R>()),
+                [=, keys=this->keys, cell=this->cell]
+                (sycl::nd_item<Dim> it, auto &ans) {
+            sycl::group<Dim> g = it.get_group();
             for(size_t i = g.get_group_linear_id()
                ;       i < count
                ;       i += g.get_group_linear_range()) {
                 //Ptr key = sycl::select_from_group(g, keys[i], 0);
                 Ptr key = keys[i];
                 if((key>>31) & 1) continue;
-                R tmp = fn(it, key, cell[i], args ...);
+                R tmp = fn(it, key, cell[i]); //, args ...);
                 ans += tmp;
             }
         });
@@ -449,7 +469,7 @@ class DeviceHash {
               typename ...Args>
     void map(sycl::handler &cgh,
              sycl::nd_range<Dim> rng,
-             const DeviceHash<U, width, Mode2, accessTarget> &out,
+             const DeviceHash<U, search_width, Mode2, accessTarget> &out,
              Fn fn, Args ... args) const {
         sycl::accessor<T, 1, Mode>    cell(this->cell);
         sycl::accessor<U, 1, Mode2>   cell2(out.cell);
@@ -458,8 +478,8 @@ class DeviceHash {
         const size_t count = 1 << size_expt;
 
         cgh.parallel_for(rng,
-                [=](sycl::nd_item<1> it) {
-            sycl::group<1> g = it.get_group();
+                [=](sycl::nd_item<Dim> it) {
+            sycl::group<Dim> g = it.get_group();
             const int ngrp = g.get_group_linear_range();
             for(size_t i = g.get_group_linear_id()
                ;       i < count
@@ -481,7 +501,7 @@ class DeviceHash {
     /** Wrap the super-index into the valid range, [0, 2**(size_expt-width)).
      */
     Ptr mod_w(Ptr si) const {
-        return si & ((1<<(size_expt-width)) - 1);
+        return si & ((1<<(size_expt-search_width)) - 1);
     }
 
     /// bucket = (key % N) is the first index.
@@ -542,7 +562,7 @@ class DeviceHash {
      * (if uniq == true) key.
      *
      * If found, runs `Step op(Ptr index, Ptr key)`
-     * on the index,key[index] pair.
+     * on the index,keys[index] pair.
      *
      * That returns false of `Stop`, true on `Complete`, or,
      * on `Continue`, continues searching until all keys are exhausted,
@@ -554,9 +574,9 @@ class DeviceHash {
                Ptr &index,
                bool uniq,
                Fn op) const {
-        Ptr i0 = (index >> width) << width; // align reads
+        Ptr i0 = (index >> search_width) << search_width; // align reads
 
-        uint32_t cap = (1 << (size_expt-width)) + (i0 != index);
+        uint32_t cap = (1 << (size_expt-search_width)) + (i0 != index);
 
         // It would be better if we could fix the group size
         // to (1<<width).  However, this setup mimicks
@@ -564,10 +584,10 @@ class DeviceHash {
         const int tid = g.get_local_linear_id();
         const int ntid = g.get_local_linear_range();
         // Max number of usable threads in this group.
-        const int ngrp = ntid < (1<<width)
-                       ? ntid : (1<<width);
+        const int ngrp = ntid < (1<<search_width)
+                       ? ntid : (1<<search_width);
         const int max_sz = //ngrp * ceil( (1<<width)/ngrp)
-                           ngrp*( ((1<<width)+ngrp-1)/ngrp );
+                           ngrp*( ((1<<search_width)+ngrp-1)/ngrp );
         for(int trials = 0
            ; trials < cap
            ; ++trials, i0 = next_hash(i0)) {
@@ -575,7 +595,8 @@ class DeviceHash {
             for(int i = tid; i < max_sz; i += ngrp) {
                 bool check = false;
                 Ptr ahead;
-                if(i < (1<<width)) {
+                //if(i0+i < (1<<size_expt))
+                if(i < (1<<search_width)) {
                     ahead = keys[i0+i];
                     check = ahead == null_ptr
                           || ahead == erased
@@ -612,6 +633,7 @@ class DeviceHash {
     std::conditional_t<Mode == sycl::access::mode::read,
                        const T&, T& >
     get_cell(Ptr loc) const {
+        ADDRESS_CHECK(loc, size_expt);
         return cell[loc];
     }
 
@@ -622,6 +644,7 @@ class DeviceHash {
      * @return true if set is successful, false otherwise
      */
     bool set_key(Ptr index, Ptr &was, Ptr key, const T &value) const {
+        ADDRESS_CHECK(index, size_expt);
         if(!reserve_key(index, was, key)) return false;
         auto v = sycl::atomic_ref<
                             Ptr, sycl::memory_order::relaxed,
@@ -638,6 +661,7 @@ class DeviceHash {
     }
 
     bool set_key(Ptr index, Ptr &was, Ptr key) const {
+        ADDRESS_CHECK(index, size_expt);
         if(!reserve_key(index, was, key)) return false;
         auto v = sycl::atomic_ref<
                             Ptr, sycl::memory_order::relaxed,
@@ -651,31 +675,13 @@ class DeviceHash {
         return true;
     }
 
-    /*  Attempt to reserve the key at index (by overwriting `was`
-     *  with reserved using relaxed semantics)
-     *
-     *  Sets `was` to the old value of the key on return
-     *  @return true if successful, false if no change
-     */
-    bool reserve_key(Ptr index, Ptr &was, Ptr key) const {
-        auto v = sycl::atomic_ref<
-                            Ptr, sycl::memory_order::relaxed,
-                            sycl::memory_scope::device,
-                            sycl::access::address_space::global_space>(
-                                    keys[index]);
-        if(!v.compare_exchange_weak(was, reserved)) {
-                            //sycl::memory_order::acquire))
-            return false;
-        }
-        return true;
-    }
-
     /*  Erase the key at index (by overwriting key with `erased`)
      *
      *  @return true if successful, false if no change
      */
     bool erase_key(Ptr index, Ptr key) const {
         if(index == null_ptr) return false;
+        ADDRESS_CHECK(index, size_expt);
 #       ifdef DEBUG_SYCLHASH
         printf("Erasing %u at %u\n", key, index);
 #       endif
