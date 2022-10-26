@@ -14,11 +14,16 @@ most operations on the hash-table are accomplished using
 .. doxygenclass:: syclhash::Bucket
    :members:
 
-These are collective calls, so each group must call add/del/next
-with the same argument.
+The iterators over each Bucket are collective, since each group must
+call add/del/next with the same argument.
 
 .. doxygenclass:: syclhash::Hash
    :members:
 
 .. doxygenclass:: syclhash::DeviceHash
    :members:
+
+Because groups don't exist in host code, the `HostHash` class
+has considerably less useful functionality than `DeviceHash`.
+
+See the examples inside `tests/` for ideas.

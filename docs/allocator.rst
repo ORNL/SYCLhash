@@ -12,12 +12,8 @@ one data address at a time.  This is because its intended
 use is for hash-tables, where adding a key to a bucket
 requires one new slot.
 
-It maintains 2 data structures:
-
-  * A giant vector of `Cell` data.
-
-  * A *free-list* of `uint32_t` bitmasks.  Each bit corresponds to
-    a cell.  If a bit is on, then the cell is occupied.
+It maintains a *free-list* of `uint32_t` bitmasks.  Each bit corresponds to
+a cell.  If a bit is on, then the cell is occupied.
 
 Memory addresses (type `uin32_t n`), index cells,
 and are decoded as you might expect::
@@ -44,14 +40,16 @@ As memory fills up, the search sequence utilizes
 a pseudo-random search order based on the 
 ``nd_item.get_group_linear_id()``::
 
-    N = sizeof(cell / sizeof(Cell));     // allocatable cells
+    N = pow(2, size_expt);               // number of addressable cells
     n_0     = group_linear_id;           // first index linearly
-    n_{i+1} = searchNext(n_i,n_0,N);
+    n_{i+1} = murmur3(n_i, n_0);         // move based on group id.
 
-    where searchNext(n_i,n_0,N) = hash(n_i | (n_0<<16)) % N
+For practicality, the maximum addressable space is limited to
+`2^31` cells (so, please choose `size_expt <= 31`).
 
-The hash output space is 2^16.  This limits the maximum addressable space to
-N <= 2^16 cells.
+Allocate just returns an un-allocated address.  If you want it to actually
+reference something, you'll need to declare your actual data space somewhere
+on your own.
 
 .. doxygenclass:: syclhash::Alloc
    :members:

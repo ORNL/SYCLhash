@@ -198,7 +198,7 @@ class DeviceAlloc {
     /** Wrap the index into the range of valid keys, [0, 2**size_expt).
      */
     Ptr mod(Ptr index) const {
-        return index & ((1<<(size_expt+1)) - 1);
+        return index & ((1<<size_expt) - 1);
     }
 
     /** Increment index in a pseudo-random way
@@ -217,7 +217,7 @@ class DeviceAlloc {
     }
 
     /** Find and allocate the next free cell by searching randomly,
-     * starting from key.
+     *  starting from key.
      */
     template <typename Group>
     Ptr alloc(Group g, Ptr key = 0) const {
